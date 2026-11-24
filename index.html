@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; connect-src 'none'; img-src 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Porte des réglages</title>
+<!--
+  Page de signature de la porte des réglages — source : 00-gouvernance,
+  00_config/socle-poste/page-signature/index.html. Publiée telle quelle sur
+  GitHub Pages ; le juge de chaque poste compare la page servie à l'empreinte
+  enregistrée à l'installation et refuse d'appliquer quoi que ce soit si elle a
+  changé (cadrage 30-rd-conception, porte des réglages, §3.7).
+
+  Règles de cette page, qui font sa sûreté :
+  - la demande arrive dans le FRAGMENT (#d=…) : il ne quitte jamais le téléphone ;
+  - rien de la demande n'est inséré comme HTML : textContent seulement ;
+  - l'empreinte signée est calculée ICI, sur l'objet affiché, jamais lue ;
+  - aucune ressource extérieure (politique de sécurité ci-dessus).
+-->
+<style>
+:root { --fond:#f7f7f5; --texte:#1d1d1b; --doux:#6b6b66; --carte:#fff; --bord:#dcdcd6;
+        --ajout:#1f6f3a; --ajout-fond:#e6f4ea; --retrait:#9b1c1c; --retrait-fond:#fbe9e9;
+        --alerte:#8a4b00; --alerte-fond:#fff3dc; --action:#1d4ed8; }
+@media (prefers-color-scheme: dark) {
+  :root { --fond:#141413; --texte:#ececea; --doux:#a3a39c; --carte:#1f1f1d; --bord:#3a3a36;
+          --ajout:#7ad39a; --ajout-fond:#173322; --retrait:#f2a0a0; --retrait-fond:#3a1a1a;
+          --alerte:#ffc46b; --alerte-fond:#3a2a10; --action:#7aa2ff; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--fond); color:var(--texte);
+       font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 1.35rem; margin: 0 0 4px; }
+h2 { font-size: 1.05rem; margin: 24px 0 8px; }
+.sous { color: var(--doux); margin: 0 0 16px; }
+.carte { background: var(--carte); border: 1px solid var(--bord); border-radius: 10px;
+         padding: 14px; margin: 10px 0; overflow-wrap: anywhere; }
+.etiquette { color: var(--doux); font-size: .85rem; }
+.ajout { background: var(--ajout-fond); color: var(--ajout); }
+.retrait { background: var(--retrait-fond); color: var(--retrait); }
+.chg { border-radius: 6px; padding: 6px 8px; margin: 6px 0; font-family: ui-monospace, Consolas, monospace;
+       font-size: .85rem; white-space: pre-wrap; }
+.alerte { background: var(--alerte-fond); color: var(--alerte); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+button { font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 14px 18px;
+         background: var(--action); color: #fff; width: 100%; margin: 8px 0; cursor: pointer; }
+button.second { background: transparent; color: var(--action); border: 1px solid var(--action); }
+button:disabled { opacity: .45; cursor: default; }
+pre { font-family: ui-monospace, Consolas, monospace; font-size: .78rem; white-space: pre-wrap;
+      overflow-wrap: anywhere; margin: 0; }
+details { margin: 10px 0; }
+summary { cursor: pointer; color: var(--doux); }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: .85rem; }
+</style>
+</head>
+<body>
+<main id="racine"><h1>Porte des réglages</h1><p class="sous">Chargement…</p></main>
+<script>
+"use strict";
+const DEPOT = "astrolem/00-gouvernance";
+const ETIQUETTE = "porte-reglages";
+const FORMAT_DEMANDE = "porte-reglages/demande/1";
+const INSTALLEURS = ["00_config/socle-poste/INSTALL_socle-poste.py",
+                     "00_config/hooks/INSTALL_autorisation-poste.py"];
+
+// ── outils ────────────────────────────────────────────────────────────────
+const racine = document.getElementById("racine");
+function el(balise, attrs, ...enfants) {
+  const n = document.createElement(balise);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "classe") n.className = v; else if (k === "clic") n.addEventListener("click", v);
+    else n.setAttribute(k, v);
+  }
+  for (const e of enfants) n.append(e instanceof Node ? e : document.createTextNode(String(e)));
+  return n;
+}
+function vider() { racine.replaceChildren(); }
+function b64uEnc(octets) {
+  let s = ""; for (const b of new Uint8Array(octets)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64uDec(t) {
+  const s = atob(t.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((t.length + 3) % 4));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+function hex(octets) { return [...new Uint8Array(octets)].map(b => b.toString(16).padStart(2, "0")).join(""); }
+async function sha256(octets) { return new Uint8Array(await crypto.subtle.digest("SHA-256", octets)); }
+
+// Forme canonique : la même que canonique() du juge (Python, json.dumps
+// sort_keys, séparateurs « , » et « : », non-ASCII en clair). Pas de nombre à
+// virgule : refusé des deux côtés.
+function canon(v) {
+  if (v === null || typeof v === "boolean" || typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "number") {
+    if (!Number.isSafeInteger(v)) throw new Error("nombre non entier dans la demande");
+    return String(v);
+  }
+  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
+  if (typeof v === "object") {
+    const cles = Object.keys(v).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return "{" + cles.map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+  }
+  throw new Error("valeur inattendue dans la demande");
+}
+async function inflate(octets) {
+  const flux = new Blob([octets]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(flux).arrayBuffer());
+}
+function ouvrirTicket(titre, corps) {
+  const u = "https://github.com/" + DEPOT + "/issues/new?labels=" + encodeURIComponent(ETIQUETTE) +
+            "&title=" + encodeURIComponent(titre) + "&body=" + encodeURIComponent(corps);
+  window.location.href = u;
+}
+function copier(texte, bouton) {
+  navigator.clipboard.writeText(texte).then(() => { bouton.textContent = "Copié"; },
+    () => { bouton.textContent = "Copie impossible : sélectionnez le texte ci-dessus"; });
+}
+function erreur(titre, detail) {
+  vider();
+  racine.append(el("h1", {}, "Porte des réglages"),
+                el("div", { classe: "alerte" }, el("strong", {}, titre), el("br"), detail || ""));
+}
+
+// ── signature d'une demande ───────────────────────────────────────────────
+async function signature(code) {
+  let demande, empreinte;
+  try {
+    const texte = new TextDecoder("utf-8", { fatal: true }).decode(await inflate(b64uDec(code)));
+    demande = JSON.parse(texte);
+    if (!demande || demande.format !== FORMAT_DEMANDE) throw new Error("format inconnu");
+    const reste = {};
+    for (const k of Object.keys(demande)) if (k !== "empreinte") reste[k] = demande[k];
+    empreinte = await sha256(new TextEncoder().encode(canon(reste)));
+  } catch (e) {
+    return erreur("Ce lien ne porte pas une demande lisible.", String(e.message || e));
+  }
+  const empreinteHex = hex(empreinte);
+  vider();
+  racine.append(el("h1", {}, "Approuver un changement de réglages"),
+                el("p", { classe: "sous" }, "Lisez ce qui change. Votre passkey signera exactement ce qui est affiché sur cette page."));
+
+  if (demande.empreinte !== empreinteHex) {
+    racine.append(el("div", { classe: "alerte" }, el("strong", {}, "Demande incohérente — ne signez pas. "),
+      "L'empreinte qu'elle déclare n'est pas celle de son contenu. Le juge la refuserait."));
+    return;
+  }
+
+  const c = el("div", { classe: "carte" });
+  c.append(el("div", { classe: "etiquette" }, "Demande"), el("div", { classe: "mono" }, demande.nom),
+           el("div", { classe: "etiquette" }, "Motif"), el("div", {}, demande.motif || "—"));
+  const dec = demande.decision || {};
+  c.append(el("div", { classe: "etiquette" }, "Votre décision citée"),
+           el("div", {}, "« " + (dec.verbatim || "—") + " » — " + (dec.entrant || "—")));
+  racine.append(c);
+
+  if (demande.installeur_modifie) {
+    const changes = INSTALLEURS.filter(i => (demande.base || {})[i] !== (demande.empreintes || {})[i]);
+    racine.append(el("div", { classe: "alerte" }, el("strong", {}, "Un programme d'installation change. "),
+      "Le juge exécutera en administrateur une nouvelle version de : " + changes.join(", ") +
+      ". Ne signez que si ce changement vous a été annoncé."));
+  }
+
+  racine.append(el("h2", {}, "Ce qui change"));
+  const fichiers = demande.fichiers || {};
+  if (!Object.keys(fichiers).length && !demande.installeur_modifie) {
+    racine.append(el("div", { classe: "carte" }, "Aucun fichier de réglages ne change."));
+  }
+  for (const chemin of Object.keys(fichiers).sort()) {
+    const carte = el("div", { classe: "carte" }, el("div", { classe: "etiquette mono" }, chemin));
+    for (const ch of fichiers[chemin].changements || []) {
+      const ajout = ch.op === "ajout";
+      carte.append(el("div", { classe: "chg " + (ajout ? "ajout" : "retrait") },
+        (ajout ? "+ ajouté  " : "− retiré  ") + ch.chemin + "\n" +
+        (typeof ch.valeur === "string" ? ch.valeur : JSON.stringify(ch.valeur, null, 2))));
+    }
+    racine.append(carte);
+  }
+
+  const tout = el("details", {}, el("summary", {}, "Contenu intégral signé (" + empreinteHex.slice(0, 16) + "…)"),
+                  el("div", { classe: "carte" }, el("pre", {}, JSON.stringify(demande, null, 2))));
+  racine.append(tout);
+
+  const bouton = el("button", {}, "Signer avec ma passkey");
+  const zone = el("div");
+  bouton.addEventListener("click", async () => {
+    bouton.disabled = true;
+    try {
+      const cred = await navigator.credentials.get({ publicKey: {
+        challenge: empreinte, rpId: location.hostname, userVerification: "required", timeout: 180000 } });
+      const r = cred.response;
+      const assertion = {
+        format: "porte-reglages/assertion/1", demande: demande.nom, empreinte: empreinteHex,
+        credential_id: b64uEnc(cred.rawId), authenticator_data: b64uEnc(r.authenticatorData),
+        client_data_json: b64uEnc(r.clientDataJSON), signature: b64uEnc(r.signature) };
+      const json = JSON.stringify(assertion, null, 2);
+      const corps = "Signature par passkey de la demande `" + demande.nom + "` (empreinte `" +
+        empreinteHex + "`).\n\nCe ticket transporte la signature jusqu'au juge de chaque poste ; " +
+        "sa valeur vient de la signature, pas du compte qui l'ouvre.\n\n```json\n" + json + "\n```\n";
+      zone.replaceChildren(
+        el("div", { classe: "carte ajout" }, "Signé. Il reste à déposer la signature : le ticket s'ouvre prérempli, validez-le."),
+        el("button", { clic: () => ouvrirTicket("[PORTE-REGLAGES] signature " + demande.nom, corps) }, "Déposer la signature"),
+        el("details", {}, el("summary", {}, "Signature (si le ticket ne s'ouvre pas)"),
+           el("div", { classe: "carte" }, el("pre", {}, json))));
+      const cp = el("button", { classe: "second" }, "Copier la signature");
+      cp.addEventListener("click", () => copier(json, cp));
+      zone.append(cp);
+    } catch (e) {
+      bouton.disabled = false;
+      zone.replaceChildren(el("div", { classe: "alerte" }, "Signature non faite : " + (e.message || e)));
+    }
+  });
+  racine.append(bouton, zone);
+}
+
+// ── enregistrement de la passkey ──────────────────────────────────────────
+async function enregistrement(libelle) {
+  vider();
+  const nom = libelle ? "Astrolem — porte des réglages (" + libelle + ")" : "Astrolem — porte des réglages";
+  racine.append(el("h1", {}, "Créer la passkey de la porte des réglages"),
+    el("p", { classe: "sous" }, "Faites-le pendant l'installation du juge, ou pour un essai. La clé privée reste dans votre téléphone ; seule la clé publique en sort."));
+  const bouton = el("button", {}, "Créer la passkey" + (libelle ? " (" + libelle + ")" : ""));
+  const zone = el("div");
+  bouton.addEventListener("click", async () => {
+    bouton.disabled = true;
+    try {
+      const cred = await navigator.credentials.create({ publicKey: {
+        rp: { id: location.hostname, name: "Astrolem — porte des réglages" },
+        user: { id: new TextEncoder().encode("astrolem-fondateur" + (libelle ? "-" + libelle : "")),
+                name: nom, displayName: nom },
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        authenticatorSelection: { residentKey: "required", userVerification: "required" },
+        attestation: "none", timeout: 180000 } });
+      const r = cred.response;
+      if (typeof r.getPublicKey !== "function" || r.getPublicKeyAlgorithm() !== -7) {
+        throw new Error("ce navigateur ne rend pas une clé P-256 lisible");
+      }
+      const spki = new Uint8Array(r.getPublicKey());
+      const cle = { format: "porte-reglages/cle/1", libelle: libelle || "principale",
+                    origine: location.origin, rp_id: location.hostname,
+                    credential_id: b64uEnc(cred.rawId), spki: b64uEnc(spki),
+                    empreinte_cle: hex(await sha256(spki)).slice(0, 16) };
+      const json = JSON.stringify(cle, null, 2);
+      const corps = "Clé publique de la passkey « " + cle.libelle + " » de la porte des réglages.\n\n" +
+        "Empreinte de la clé, à comparer à celle que l'installation affiche : **" + cle.empreinte_cle + "**\n\n" +
+        "```json\n" + json + "\n```\n";
+      zone.replaceChildren(
+        el("div", { classe: "carte ajout" }, "Passkey créée. Empreinte de la clé : ", el("strong", { classe: "mono" }, cle.empreinte_cle)),
+        el("button", { clic: () => ouvrirTicket("[PORTE-REGLAGES] passkey " + cle.libelle, corps) }, "Déposer la clé publique"),
+        el("details", {}, el("summary", {}, "Clé publique"), el("div", { classe: "carte" }, el("pre", {}, json))));
+    } catch (e) {
+      bouton.disabled = false;
+      zone.replaceChildren(el("div", { classe: "alerte" }, "Passkey non créée : " + (e.message || e)));
+    }
+  });
+  racine.append(bouton, zone);
+}
+
+// ── aiguillage ────────────────────────────────────────────────────────────
+(function () {
+  const f = location.hash.slice(1);
+  if (!window.PublicKeyCredential || !window.DecompressionStream || !crypto.subtle) {
+    return erreur("Ce navigateur ne sait pas signer par passkey.", "Ouvrez le lien dans Safari ou Chrome à jour.");
+  }
+  if (f.startsWith("d=")) return signature(f.slice(2));
+  if (f === "enregistrer" || f.startsWith("enregistrer=")) {
+    const lib = f.includes("=") ? decodeURIComponent(f.split("=")[1]).replace(/[^a-z0-9-]/gi, "").slice(0, 24) : "";
+    return enregistrement(lib);
+  }
+  vider();
+  racine.append(el("h1", {}, "Porte des réglages"),
+    el("p", {}, "Cette page fait signer, par votre passkey, une demande de changement des réglages de l'agent. Elle s'ouvre depuis le lien d'une demande."));
+})();
+</script>
+</body>
+</html>
